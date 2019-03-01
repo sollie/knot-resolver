@@ -108,6 +108,13 @@ bool kr_log_trace(const struct kr_query *query, const char *source, const char *
 #endif
 
 /** @cond Memory alloc routines */
+
+/** Readability: avoid const-casts in code. */
+static inline void free_const(const void *what)
+{
+	free((void *)what);
+}
+
 static inline void *mm_alloc(knot_mm_t *mm, size_t size)
 {
 	if (mm) return mm->alloc(mm->ctx, size);
@@ -119,7 +126,7 @@ static inline void mm_free(knot_mm_t *mm, const void *what)
 		if (mm->free)
 			mm->free((void *)what);
 	}
-	else free((void *)what);
+	else free_const(what);
 }
 
 /** Realloc implementation using memory context. */
@@ -137,6 +144,13 @@ static inline void mm_ctx_init(knot_mm_t *mm)
 	mm->free = free;
 }
 /* @endcond */
+
+/** A strcmp() variant directly usable for qsort() on an array of strings. */
+static inline int strcmp_p(const void *p1, const void *p2)
+{
+	return strcmp(*(char * const *)p1, *(char * const *)p2);
+}
+
 
 /** Return time difference in miliseconds.
   * @note based on the _BSD_SOURCE timersub() macro */
@@ -288,6 +302,26 @@ void kr_inaddr_set_port(struct sockaddr *addr, uint16_t port);
 KR_EXPORT
 int kr_inaddr_str(const struct sockaddr *addr, char *buf, size_t *buflen);
 
+/** Write string representation for given address as "<addr>#<port>".
+ * It's the same as kr_inaddr_str(), but the input address is input in native format
+ * like for inet_ntop() (4 or 16 bytes) and port must be separate parameter.  */
+KR_EXPORT
+int kr_ntop_str(int family, const void *src, uint16_t port, char *buf, size_t *buflen);
+
+/** @internal Create string representation addr#port.
+ *  @return pointer to static string
+ */
+static inline char *kr_straddr(const struct sockaddr *addr)
+{
+	assert(addr != NULL);
+	/* We are the sinle-threaded application */
+	static char str[INET6_ADDRSTRLEN + 1 + 5 + 1];
+	size_t len = sizeof(str);
+	int ret = kr_inaddr_str(addr, str, &len);
+	return ret != kr_ok() || len == 0 ? NULL : str;
+}
+
+
 /** Return address type for string. */
 KR_EXPORT KR_PURE
 int kr_straddr_family(const char *addr);
@@ -303,15 +337,16 @@ KR_EXPORT
 int kr_straddr_subnet(void *dst, const char *addr);
 
 /** Splits ip address specified as "addr@port" or "addr#port" into addr and port.
- * \param addr zero-terminated input
- * \param buf buffer in case we need to copy the address;
- * 		length > MIN(strlen(addr), INET6_ADDRSTRLEN + 1)
- * \param port[out] written in case it's specified in addr
- * \return pointer to address without port (zero-terminated string)
+ * \param instr[in] zero-terminated input, e.g. "192.0.2.1#12345\0"
+ * \param ipaddr[out] working buffer for the port-less prefix of instr;
+ *                    length >= INET6_ADDRSTRLEN + 1.
+ * \param port[out] written in case it's specified in instr
+ * \return error code
  * \note Typically you follow this by kr_straddr_socket().
  */
 KR_EXPORT
-const char * kr_straddr_split(const char *addr, char *buf, uint16_t *port);
+int kr_straddr_split(const char *instr, char ipaddr[static restrict (INET6_ADDRSTRLEN + 1)],
+		     uint16_t *port);
 
 /** Formats ip address and port in "addr#port" format.
   * and performs validation.
@@ -409,19 +444,6 @@ static inline uint16_t kr_rrset_type_maysig(const knot_rrset_t *rr)
 	if (type == KNOT_RRTYPE_RRSIG)
 		type = knot_rrsig_type_covered(rr->rrs.rdata);
 	return type;
-}
-
-/** @internal Return string representation of addr.
- *  @note return pointer to static string
- */
-static inline char *kr_straddr(const struct sockaddr *addr)
-{
-	assert(addr != NULL);
-	/* We are the sinle-threaded application */
-	static char str[INET6_ADDRSTRLEN + 1 + 5 + 1];
-	size_t len = sizeof(str);
-	int ret = kr_inaddr_str(addr, str, &len);
-	return ret != kr_ok() || len == 0 ? NULL : str;
 }
 
 /** The current time in monotonic milliseconds.
